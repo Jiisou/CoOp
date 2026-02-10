@@ -7,29 +7,173 @@ Adapts trainers/coop.py to:
 3. Support temporal aggregation for video features [B, T, D] -> [B, D]
 """
 
+import os
 import torch
 import torch.nn as nn
 
-import open_clip
 
+def load_mobileclip(pretrained_path: str = None, model_name: str = "mc2_s0", device: str = "cpu"):
+    """Load MobileCLIP model and tokenizer (supports v1 and v2).
 
-def load_mobileclip(pretrained_path: str, device: str = "cpu"):
-    """Load MobileCLIP S0 model and tokenizer via open_clip.
+    Tries multiple loading strategies:
+    1. open_clip package (v2: MobileCLIP2-*) - preferred for v2
+    2. Apple mobileclip package (v1: mobileclip_*) - for v1
+    3. Auto-download if path not provided
 
     Args:
-        pretrained_path: Path to pretrained weights (.pt file).
+        pretrained_path: Path to pretrained weights (.pt file) or checkpoint name.
+                        If None, attempts to auto-download.
+        model_name: Model variant name (mobileclip_s0, mobileclip_s1, mobileclip_s2).
         device: Device to load model on.
 
     Returns:
         model: MobileCLIP model (eval mode, on CPU for component extraction).
-        tokenizer: open_clip tokenizer for MobileCLIP-S0.
+        tokenizer: Tokenizer for the model.
     """
-    model, _, _ = open_clip.create_model_and_transforms(
-        "MobileCLIP-S0", pretrained=pretrained_path,
-    )
-    model = model.to(device).eval()
-    tokenizer = open_clip.get_tokenizer("MobileCLIP-S0")
-    return model, tokenizer
+    print(f"Loading MobileCLIP model: {model_name}")
+
+    # Strategy 1: Try open_clip package (v2)
+    try:
+        import open_clip
+        print("  → Attempting to load via open_clip package (MobileCLIP2-*)...")
+
+        # Map user-friendly names to open_clip v2 names
+        v2_name_map = {
+            "mc2_s0": "MobileCLIP2-S0",
+            "mc1_s0": "MobileCLIP-S0",  # v1 in mobileclip
+            # "mobileclip_s2": "MobileCLIP2-S2",
+            # "mobileclip_s3": "MobileCLIP2-S3",
+            # "mobileclip_s4": "MobileCLIP2-S4",
+            # "mobileclip_b": "MobileCLIP2-B",
+            # "mobileclip_l": "MobileCLIP2-L-14",
+        }
+        openclip_name = v2_name_map.get(model_name.lower(), "MobileCLIP2-S0")
+
+        if pretrained_path and os.path.exists(pretrained_path):
+            # Load from local checkpoint
+            model, _, _ = open_clip.create_model_and_transforms(
+                openclip_name, pretrained=pretrained_path
+            )
+            print(f"  ✓ Loaded from local checkpoint: {pretrained_path}")
+        else:
+            # Try auto-download via open_clip
+            available_models = open_clip.list_pretrained()
+
+            # Find matching pretrained checkpoints
+            matching = [m for m in available_models if openclip_name in m[0]]
+
+            if matching:
+                model_str, checkpoint = matching[0]
+                print(f"  → Auto-downloading {model_str} with checkpoint {checkpoint}")
+                model, _, _ = open_clip.create_model_and_transforms(
+                    model_str, pretrained=checkpoint
+                )
+                print(f"  ✓ Auto-downloaded successfully")
+            else:
+                # No pretrained available, try loading architecture
+                print(f"  ⚠ No pretrained checkpoint found for {openclip_name}, trying v1 package...")
+                raise ImportError(f"Model {openclip_name} not available in open_clip")
+
+        tokenizer = open_clip.get_tokenizer(openclip_name)
+        model = model.to(device).eval()
+        print(f"  ✓ MobileCLIP v2 (open_clip) loaded successfully")
+        return model, tokenizer
+
+    except ImportError as e:
+        print(f"  ℹ open_clip v2 not available ({e}), trying mobileclip package (v1)...")
+    except Exception as e:
+        print(f"  ℹ open_clip loading failed: {e}, trying mobileclip package (v1)...")
+
+    # Strategy 2: Try Apple mobileclip package (version 1)
+    try:
+        import mobileclip
+        print("  → Attempting to load via mobileclip package (v1)...")
+
+        if pretrained_path and os.path.exists(pretrained_path):
+            # Load from local checkpoint
+            model, _, preprocess = mobileclip.create_model_and_transforms(
+                model_name, pretrained=pretrained_path
+            )
+            print(f"  ✓ Loaded from local checkpoint: {pretrained_path}")
+        else:
+            # Auto-download
+            model, _, preprocess = mobileclip.create_model_and_transforms(
+                model_name, pretrained=f'{model_name}.pt'
+            )
+            print(f"  ✓ Auto-downloaded {model_name}")
+
+        tokenizer = mobileclip.get_tokenizer(model_name)
+        model = model.to(device).eval()
+        print(f"  ✓ MobileCLIP v1 (mobileclip package) loaded successfully")
+        return model, tokenizer
+
+    except Exception as e:
+        print(f"  ✗ mobileclip loading failed: {e}")
+        raise RuntimeError(
+            f"Failed to load MobileCLIP. Please install either:\n"
+            f"  - open_clip: pip install open_clip_torch  (for MobileCLIP v2)\n"
+            f"  - mobileclip: pip install git+https://github.com/apple/ml-mobileclip.git  (for MobileCLIP v1)\n"
+            f"Error: {e}"
+        )
+
+
+def _get_text_encoder_components(clip_model):
+    """Safely extract text encoder components from various CLIP model structures.
+
+    Handles:
+    - Standard CLIP: model.transformer, model.ln_final, etc.
+    - CustomTextCLIP: model.text.transformer, model.text.ln_final, etc.
+    - Other variants
+
+    Returns:
+        dict with keys: transformer, positional_embedding, ln_final, text_projection,
+                       token_embedding, attn_mask, logit_scale, dtype
+    """
+    components = {}
+
+    # Helper to try multiple attribute paths
+    def get_attr(names):
+        for name_path in names:
+            obj = clip_model
+            try:
+                for attr in name_path.split('.'):
+                    obj = getattr(obj, attr)
+                return obj
+            except AttributeError:
+                continue
+        raise AttributeError(f"Could not find any of {names} in model type {type(clip_model)}")
+
+    # Extract components
+    try:
+        components['transformer'] = get_attr(['transformer', 'text.transformer'])
+        components['positional_embedding'] = get_attr(['positional_embedding', 'text.positional_embedding'])
+        components['ln_final'] = get_attr(['ln_final', 'text.ln_final'])
+        components['text_projection'] = get_attr(['text_projection', 'text.text_projection'])
+        components['token_embedding'] = get_attr(['token_embedding', 'text.token_embedding'])
+
+        # Optional components
+        try:
+            components['attn_mask'] = get_attr(['attn_mask', 'text.attn_mask'])
+        except AttributeError:
+            components['attn_mask'] = None
+
+        try:
+            components['logit_scale'] = get_attr(['logit_scale', 'text.logit_scale'])
+        except AttributeError:
+            components['logit_scale'] = nn.Parameter(torch.ones([]) * torch.log(torch.tensor(1 / 0.07)))
+
+        # Get dtype from token_embedding
+        components['dtype'] = components['token_embedding'].weight.dtype
+
+        print(f"  ✓ Successfully extracted text encoder components from {type(clip_model).__name__}")
+        return components
+
+    except AttributeError as e:
+        print(f"  ✗ Failed to extract text encoder components: {e}")
+        print(f"  Model attributes: {dir(clip_model)}")
+        if hasattr(clip_model, 'text'):
+            print(f"  Model.text attributes: {dir(clip_model.text)}")
+        raise
 
 
 class TextEncoder(nn.Module):
@@ -41,11 +185,12 @@ class TextEncoder(nn.Module):
 
     def __init__(self, clip_model):
         super().__init__()
-        self.transformer = clip_model.transformer
-        self.positional_embedding = clip_model.positional_embedding
-        self.ln_final = clip_model.ln_final
-        self.text_projection = clip_model.text_projection
-        self.attn_mask = clip_model.attn_mask
+        components = _get_text_encoder_components(clip_model)
+        self.transformer = components['transformer']
+        self.positional_embedding = components['positional_embedding']
+        self.ln_final = components['ln_final']
+        self.text_projection = components['text_projection']
+        self.attn_mask = components['attn_mask']
 
     def forward(self, prompts, tokenized_prompts):
         """Encode prompt embeddings through text transformer.
@@ -110,16 +255,25 @@ class PromptLearner(nn.Module):
     ):
         super().__init__()
         n_cls = len(classnames)
-        ctx_dim = clip_model.ln_final.weight.shape[0]
-        dtype = clip_model.token_embedding.weight.dtype
+
+        # Extract components safely
+        components = _get_text_encoder_components(clip_model)
+        ctx_dim = components['ln_final'].weight.shape[0]
+        dtype = components['dtype']
+        token_embedding = components['token_embedding']
 
         if ctx_init:
             # Initialize context vectors from given words
             ctx_init = ctx_init.replace("_", " ")
             n_ctx = len(ctx_init.split(" "))
-            prompt_tokens = tokenizer(ctx_init)
+
+            # Tokenize with proper handling for both mobileclip and open_clip
+            prompt_tokens = tokenizer([ctx_init])
+            if not isinstance(prompt_tokens, torch.Tensor):
+                prompt_tokens = torch.tensor(prompt_tokens)
+
             with torch.no_grad():
-                embedding = clip_model.token_embedding(prompt_tokens).type(dtype)
+                embedding = token_embedding(prompt_tokens).type(dtype)
             ctx_vectors = embedding[0, 1 : 1 + n_ctx, :]
             prompt_prefix = ctx_init
         else:
@@ -139,12 +293,29 @@ class PromptLearner(nn.Module):
         self.ctx = nn.Parameter(ctx_vectors)  # to be optimized
 
         classnames = [name.replace("_", " ") for name in classnames]
-        name_lens = [len(tokenizer(name)[0]) - 2 for name in classnames]  # exclude SOT/EOT
+
+        # Calculate name lengths with robust tokenization
+        name_lens = []
+        for name in classnames:
+            tokens = tokenizer([name])
+            if not isinstance(tokens, torch.Tensor):
+                tokens = torch.tensor(tokens)
+            # Subtract 2 for SOT/EOT tokens
+            name_lens.append(tokens.shape[1] - 2)
+
         prompts = [prompt_prefix + " " + name + "." for name in classnames]
 
-        tokenized_prompts = torch.cat([tokenizer(p) for p in prompts])
+        # Tokenize all prompts
+        tokenized_list = []
+        for p in prompts:
+            tokens = tokenizer([p])
+            if not isinstance(tokens, torch.Tensor):
+                tokens = torch.tensor(tokens)
+            tokenized_list.append(tokens)
+        tokenized_prompts = torch.cat(tokenized_list, dim=0)
+
         with torch.no_grad():
-            embedding = clip_model.token_embedding(tokenized_prompts).type(dtype)
+            embedding = token_embedding(tokenized_prompts).type(dtype)
 
         # Register static token embeddings as buffers
         self.register_buffer("token_prefix", embedding[:, :1, :])  # SOS
@@ -244,7 +415,10 @@ class VideoFeatureCLIP(nn.Module):
         )
         self.tokenized_prompts = self.prompt_learner.tokenized_prompts
         self.text_encoder = TextEncoder(clip_model)
-        self.logit_scale = clip_model.logit_scale
+
+        # Extract logit_scale safely
+        components = _get_text_encoder_components(clip_model)
+        self.logit_scale = components['logit_scale']
         self.temporal_agg = temporal_agg
 
     def forward(self, features):

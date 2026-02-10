@@ -337,7 +337,8 @@ def validate_video_level(
 def train(
     feature_dir: str,
     val_feature_dir: str,
-    mobileclip_path: str,
+    mobileclip_path: str = None,
+    mobileclip_model: str = "mobileclip2_s0",
     annotation_dir: str = None,
     val_annotation_dir: str = None,
     normal_class: str = "normal",
@@ -426,8 +427,15 @@ def train(
     # -----------------------------------------------------------------------
     # Model
     # -----------------------------------------------------------------------
-    print(f"\nLoading MobileCLIP S0 from: {mobileclip_path}")
-    clip_model, tokenizer = load_mobileclip(mobileclip_path, device="cpu")
+    if mobileclip_path:
+        print(f"\nLoading MobileCLIP ({mobileclip_model}) from: {mobileclip_path}")
+    else:
+        print(f"\nAuto-loading MobileCLIP ({mobileclip_model})...")
+    clip_model, tokenizer = load_mobileclip(
+        pretrained_path=mobileclip_path,
+        model_name=mobileclip_model,
+        device="cpu"
+    )
 
     model = VideoFeatureCLIP(
         classnames=classnames,
@@ -626,7 +634,7 @@ def parse_args():
                         help="Path to annotation CSV directory (for strict normal filtering)")
     parser.add_argument("--val-annotation-dir", type=str, default=None,
                         help="Path to validation annotation CSV directory")
-    parser.add_argument("--normal-class", type=str, default="normal",
+    parser.add_argument("--normal-class", type=str, default="Normal",
                         help="Name of the normal class directory (case-insensitive)")
 
     # Window
@@ -641,8 +649,11 @@ def parse_args():
                         help="Disable strict normal snippet filtering")
 
     # MobileCLIP
-    parser.add_argument("--mobileclip-path", type=str, required=True,
-                        help="Path to MobileCLIP S0 pretrained weights (.pt)")
+    parser.add_argument("--mobileclip-path", type=str, default=None,
+                        help="Path to MobileCLIP pretrained weights (.pt). If not provided, auto-downloads.")
+    parser.add_argument("--mobileclip-model", type=str, default="mobileclip2_s0",
+                        choices=["mobileclip2_s0", "mobileclip_s0"],
+                        help="MobileCLIP model variant")
 
     # CoOp
     parser.add_argument("--n-ctx", type=int, default=16,
@@ -724,6 +735,7 @@ def main():
         feature_dir=args.feature_dir,
         val_feature_dir=args.val_feature_dir,
         mobileclip_path=args.mobileclip_path,
+        mobileclip_model=args.mobileclip_model,
         annotation_dir=args.annotation_dir,
         val_annotation_dir=args.val_annotation_dir,
         normal_class=args.normal_class,
