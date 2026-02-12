@@ -1,0 +1,33 @@
+# CoOp Prompt Learning config for pre-extracted video features with MobileCLIP2 S0
+#
+# Usage:
+#   python train_video_feature_coop.py \
+#       --feature-dir /path/to/features/train \
+#       --val-feature-dir /path/to/features/val \
+#       --n-ctx 16 --lr 0.002 --epochs 50
+
+# CoOp prompt settings
+N_CTX: 16      # number of context vectors (learnable)
+CSC: true #false     # whether to use class-specific context vectors
+CTX_INIT: ""   # initialize context vectors with empty strings
+CLASS_TOKEN_POSITION: "end" # position of class token
+
+# Temporal settings
+TEMPORAL_AGG: "mean"   # temporal aggregation method
+UNIT_DURATION: 1       # duration of each unit (ALREADY PREPROCESSED )
+OVERLAP_RATIO: 0.0     # overlap ratio between units
+STRICT_NORMAL_SAMPLING: true # whether to use strict normal sampling
+
+# Training
+LR: 0.002
+WEIGHT_DECAY: 0.0
+BATCH_SIZE: 32
+MAX_EPOCH: 50
+WARMUP_EPOCH: 1
+PATIENCE: 10
+SAVE_INTERVAL: 10
+PRINT_FREQ: 10
+
+# Data loading
+NUM_WORKERS: 4
+SEED: 42

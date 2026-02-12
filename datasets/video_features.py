@@ -68,9 +68,13 @@ class VideoFeatureDataset(Dataset):
         normal_class: Name of the normal class directory (case-insensitive).
             Used for strict normal filtering logic.
         unit_duration: Window size in seconds (number of frames per sample).
+            Only used when use_video_level_pooling=False.
         overlap_ratio: Sliding window overlap ratio (0.0 to <1.0).
+            Only used when use_video_level_pooling=False.
         strict_normal_sampling: If True, discard post-event untagged windows
-            in non-normal class videos.
+            in non-normal class videos. Only used when use_video_level_pooling=False.
+        use_video_level_pooling: If True, use mean pooling to aggregate each video
+            [T, D] -> [D] as a single sample. If False, use sliding windows.
         max_files_per_class: Limit number of files per class (for balancing).
         verbose: Print dataset statistics.
         seed: Random seed for reproducibility.
@@ -84,6 +88,7 @@ class VideoFeatureDataset(Dataset):
         unit_duration: int = 1,
         overlap_ratio: float = 0.0,
         strict_normal_sampling: bool = True,
+        use_video_level_pooling: bool = False,
         max_files_per_class: Optional[int] = None,
         verbose: bool = True,
         seed: int = 42,
@@ -95,6 +100,7 @@ class VideoFeatureDataset(Dataset):
         self.unit_duration = unit_duration
         self.overlap_ratio = overlap_ratio
         self.strict_normal_sampling = strict_normal_sampling
+        self.use_video_level_pooling = use_video_level_pooling
         self.max_files_per_class = max_files_per_class
         self.verbose = verbose
         self.seed = seed
@@ -175,26 +181,55 @@ class VideoFeatureDataset(Dataset):
             print(f"Loaded annotations for {len(self.annotations)} files")
 
     def _build_samples(self):
-        """Build sample list from feature files with sliding windows."""
-        stride = max(1, int(self.unit_duration * (1.0 - self.overlap_ratio)))
+        """Build sample list from feature files.
 
-        for class_dir, label in self.class_to_label.items():
-            class_path = os.path.join(self.feature_dir, class_dir)
-            is_normal_class = class_dir.lower() == self.normal_class
+        If use_video_level_pooling=True, creates one sample per video (no sliding windows).
+        Otherwise, creates sliding window samples.
+        """
+        if self.use_video_level_pooling:
+            # Video-level pooling: one sample per .npy file
+            for class_dir, label in self.class_to_label.items():
+                class_path = os.path.join(self.feature_dir, class_dir)
 
-            npy_files = sorted([
-                f for f in os.listdir(class_path)
-                if f.endswith(".npy")
-            ])
+                npy_files = sorted([
+                    f for f in os.listdir(class_path)
+                    if f.endswith(".npy")
+                ])
 
-            if self.max_files_per_class is not None and len(npy_files) > self.max_files_per_class:
-                npy_files = random.sample(npy_files, self.max_files_per_class)
+                if self.max_files_per_class is not None and len(npy_files) > self.max_files_per_class:
+                    npy_files = random.sample(npy_files, self.max_files_per_class)
 
-            for npy_file in npy_files:
-                npy_path = os.path.join(class_path, npy_file)
-                self._process_npy_feature(
-                    npy_path, label, class_dir, is_normal_class, stride
-                )
+                for npy_file in npy_files:
+                    npy_path = os.path.join(class_path, npy_file)
+                    file_stem = os.path.splitext(npy_file)[0]
+
+                    self.samples.append({
+                        "npy_path": npy_path,
+                        "label": label,
+                        "video_id": file_stem,
+                        "pool_video": True,  # Flag to indicate video-level pooling
+                    })
+        else:
+            # Sliding window approach (original)
+            stride = max(1, int(self.unit_duration * (1.0 - self.overlap_ratio)))
+
+            for class_dir, label in self.class_to_label.items():
+                class_path = os.path.join(self.feature_dir, class_dir)
+                is_normal_class = class_dir.lower() == self.normal_class
+
+                npy_files = sorted([
+                    f for f in os.listdir(class_path)
+                    if f.endswith(".npy")
+                ])
+
+                if self.max_files_per_class is not None and len(npy_files) > self.max_files_per_class:
+                    npy_files = random.sample(npy_files, self.max_files_per_class)
+
+                for npy_file in npy_files:
+                    npy_path = os.path.join(class_path, npy_file)
+                    self._process_npy_feature(
+                        npy_path, label, class_dir, is_normal_class, stride
+                    )
 
     def _process_npy_feature(
         self,
@@ -264,11 +299,16 @@ class VideoFeatureDataset(Dataset):
         print(f"VideoFeatureDataset Statistics")
         print(f"{'='*50}")
         print(f"Feature dir: {self.feature_dir}")
-        print(f"Unit duration: {self.unit_duration}s, Overlap: {self.overlap_ratio}")
-        print(f"Strict normal sampling: {self.strict_normal_sampling}")
-        print(f"Total windows created: {self._total_windows}")
-        print(f"Discarded post-event windows: {self._discarded_post_event}")
-        print(f"Final samples: {len(self.samples)}")
+
+        if self.use_video_level_pooling:
+            print(f"Mode: Video-level mean pooling (one sample per video)")
+            print(f"Total videos: {len(self.samples)}")
+        else:
+            print(f"Unit duration: {self.unit_duration}s, Overlap: {self.overlap_ratio}")
+            print(f"Strict normal sampling: {self.strict_normal_sampling}")
+            print(f"Total windows created: {self._total_windows}")
+            print(f"Discarded post-event windows: {self._discarded_post_event}")
+            print(f"Final samples: {len(self.samples)}")
 
         # Per-class distribution
         label_counts = defaultdict(int)
@@ -286,9 +326,16 @@ class VideoFeatureDataset(Dataset):
         sample = self.samples[idx]
 
         feat = np.load(sample["npy_path"], mmap_mode="r")
-        window = feat[sample["start_sec"]:sample["end_sec"]]  # [unit_duration, D]
 
-        feature_tensor = torch.from_numpy(np.array(window)).float()
+        if sample.get("pool_video", False):
+            # Video-level pooling: mean across temporal dimension [T, D] -> [D]
+            feature_vector = np.mean(feat, axis=0)  # [D]
+            feature_tensor = torch.from_numpy(feature_vector).float()
+        else:
+            # Sliding window: extract specific temporal segment [unit_duration, D]
+            window = feat[sample["start_sec"]:sample["end_sec"]]  # [unit_duration, D]
+            feature_tensor = torch.from_numpy(np.array(window)).float()
+
         return feature_tensor, sample["label"]
 
     def get_video_ids(self) -> List[str]:

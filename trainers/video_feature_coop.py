@@ -216,8 +216,22 @@ class TextEncoder(nn.Module):
         x = x.permute(1, 0, 2)  # LND -> NLD
         x = self.ln_final(x)
 
-        # Extract EOT token features (highest token index per sequence)
-        x = x[torch.arange(x.shape[0]), tokenized_prompts.argmax(dim=-1)]
+        # Extract features
+        # NOTE: For CoOp with many identical tokens, EOT position may have identical
+        # representations. Instead, we use mean pooling over non-padding tokens.
+        # Find the first padding token (token_id = 0) for each sequence
+        eot_indices = tokenized_prompts.argmax(dim=-1)  # Position of EOT token
+
+        # Use mean pooling over tokens up to (and including) EOT position
+        # This aggregates information from all meaningful tokens
+        batch_size = x.shape[0]
+        pooled_features = []
+        for i in range(batch_size):
+            eot_pos = eot_indices[i].item()
+            # Mean pool from SOS (pos 0) to EOT (inclusive)
+            pooled = x[i, :eot_pos+1, :].mean(dim=0)
+            pooled_features.append(pooled)
+        x = torch.stack(pooled_features, dim=0)
 
         # Project to embedding space
         if isinstance(self.text_projection, nn.Linear):
@@ -273,7 +287,9 @@ class PromptLearner(nn.Module):
                 prompt_tokens = torch.tensor(prompt_tokens)
 
             with torch.no_grad():
-                embedding = token_embedding(prompt_tokens).type(dtype)
+                # Move tokens to same device as token_embedding
+                prompt_tokens = prompt_tokens.to(token_embedding.weight.device)
+                embedding = token_embedding(prompt_tokens).type(dtype) # 토큰화된 단어 인덱스 텐서를 사전 학습된 CLIP의 토큰 임베딩 레이어에 통과시켜 고차원 임베딩 벡터로 변환
             ctx_vectors = embedding[0, 1 : 1 + n_ctx, :]
             prompt_prefix = ctx_init
         else:
@@ -300,7 +316,7 @@ class PromptLearner(nn.Module):
             tokens = tokenizer([name])
             if not isinstance(tokens, torch.Tensor):
                 tokens = torch.tensor(tokens)
-            # Subtract 2 for SOT/EOT tokens
+            # Subtract 2 for SOS/EOS tokens
             name_lens.append(tokens.shape[1] - 2)
 
         prompts = [prompt_prefix + " " + name + "." for name in classnames]
@@ -315,15 +331,17 @@ class PromptLearner(nn.Module):
         tokenized_prompts = torch.cat(tokenized_list, dim=0)
 
         with torch.no_grad():
+            # Move tokenized_prompts to same device as token_embedding
+            tokenized_prompts = tokenized_prompts.to(token_embedding.weight.device)
             embedding = token_embedding(tokenized_prompts).type(dtype)
 
         # Register static token embeddings as buffers
         self.register_buffer("token_prefix", embedding[:, :1, :])  # SOS
         self.register_buffer("token_suffix", embedding[:, 1 + n_ctx:, :])  # CLS, EOS
+        self.register_buffer("tokenized_prompts", tokenized_prompts)  # 모델 이동시 토큰화된 프롬프트도 항상 같은 디바이스에 있도록 버퍼에 등록
 
         self.n_cls = n_cls
         self.n_ctx = n_ctx
-        self.tokenized_prompts = tokenized_prompts  # torch.Tensor
         self.name_lens = name_lens
         self.class_token_position = class_token_position
 
@@ -413,7 +431,6 @@ class VideoFeatureCLIP(nn.Module):
             n_ctx=n_ctx, ctx_init=ctx_init, csc=csc,
             class_token_position=class_token_position,
         )
-        self.tokenized_prompts = self.prompt_learner.tokenized_prompts
         self.text_encoder = TextEncoder(clip_model)
 
         # Extract logit_scale safely
@@ -444,7 +461,7 @@ class VideoFeatureCLIP(nn.Module):
 
         # Generate text features from learned prompts
         prompts = self.prompt_learner()
-        tokenized_prompts = self.tokenized_prompts
+        tokenized_prompts = self.prompt_learner.tokenized_prompts # 버퍼에 직접 접근해 텐서를 가져옴 (올바른 DEVICE로부터)
         text_features = self.text_encoder(prompts, tokenized_prompts)
 
         # L2 normalize

@@ -345,6 +345,7 @@ def train(
     unit_duration: int = 1,
     overlap_ratio: float = 0.0,
     strict_normal_sampling: bool = True,
+    use_video_level_pooling: bool = False,
     temporal_agg: str = "mean",
     n_ctx: int = 16,
     ctx_init: str = "",
@@ -357,10 +358,10 @@ def train(
     weight_decay: float = 0.0,
     warmup_epochs: int = 1,
     patience: int = 10,
-    checkpoint_dir: str = "./output/video_feature_coop",
+    checkpoint_dir: str = "./output_ckpts/video_feature_coop",
     save_name: str = "video_feature_coop",
     save_interval: int = 10,
-    log_dir: str = "./output/video_feature_coop/tensorboard",
+    log_dir: str = "./output_ckpts/video_feature_coop/tensorboard",
     seed: int = 42,
     resume_ckpt: str = None,
     eval_only: bool = False,
@@ -387,6 +388,7 @@ def train(
         unit_duration=unit_duration,
         overlap_ratio=overlap_ratio,
         strict_normal_sampling=strict_normal_sampling,
+        use_video_level_pooling=use_video_level_pooling,
         verbose=True,
         seed=seed,
     )
@@ -399,6 +401,7 @@ def train(
         unit_duration=unit_duration,
         overlap_ratio=0.0,  # No overlap for validation
         strict_normal_sampling=False,  # Keep all samples for validation
+        use_video_level_pooling=use_video_level_pooling,
         verbose=True,
         seed=seed,
     )
@@ -555,6 +558,7 @@ def train(
         if val_acc > best_acc:
             best_acc = val_acc
             save_path = os.path.join(checkpoint_dir, f"{save_name}_best.pth")
+            print(f"\nSaving best model when epoch {epoch + 1}")
             save_checkpoint(model, optimizer, epoch, val_loss, val_acc, save_path)
 
         # Periodic checkpoint
@@ -622,7 +626,7 @@ def train(
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="CoOp Prompt Learning on Pre-Extracted Video Features (MobileCLIP S0)"
+        description="CoOp Prompt Learning on Pre-Extracted Video Features (MobileCLIP2-S0)"
     )
 
     # Data
@@ -647,6 +651,8 @@ def parse_args():
     parser.add_argument("--no-strict-normal-sampling", dest="strict_normal_sampling",
                         action="store_false",
                         help="Disable strict normal snippet filtering")
+    parser.add_argument("--use-video-level-pooling", action="store_true", default=False,
+                        help="Use mean pooling to aggregate each video [T, D] -> [D] as single sample")
 
     # MobileCLIP
     parser.add_argument("--mobileclip-path", type=str, default=None,
@@ -660,7 +666,7 @@ def parse_args():
                         help="Number of learnable context tokens")
     parser.add_argument("--ctx-init", type=str, default="",
                         help="Context initialization words (e.g., 'a video of a')")
-    parser.add_argument("--csc", action="store_true", default=False,
+    parser.add_argument("--csc", action="store_true", default=True,
                         help="Use class-specific context")
     parser.add_argument("--class-token-position", type=str, default="end",
                         choices=["end", "middle", "front"],
@@ -687,14 +693,14 @@ def parse_args():
 
     # Output
     parser.add_argument("--checkpoint-dir", type=str,
-                        default="./output/video_feature_coop",
+                        default="./output_ckpts/video_feature_coop",
                         help="Checkpoint save directory")
     parser.add_argument("--save-name", type=str, default="video_feature_coop",
                         help="Base name for saved models")
-    parser.add_argument("--save-interval", type=int, default=10,
+    parser.add_argument("--save-interval", type=int, default=5,
                         help="Save checkpoint every N epochs")
     parser.add_argument("--log-dir", type=str,
-                        default="./output/video_feature_coop/tensorboard",
+                        default="./output_ckpts/video_feature_coop/tensorboard",
                         help="TensorBoard log directory")
 
     # Misc
@@ -722,6 +728,7 @@ def main():
     print(f"CSC:             {args.csc}")
     print(f"Class position:  {args.class_token_position}")
     print(f"Temporal agg:    {args.temporal_agg}")
+    print(f"Video pooling:   {args.use_video_level_pooling}")
     print(f"Unit duration:   {args.unit_duration}s")
     print(f"Overlap ratio:   {args.overlap_ratio}")
     print(f"Strict normal:   {args.strict_normal_sampling}")
@@ -742,6 +749,7 @@ def main():
         unit_duration=args.unit_duration,
         overlap_ratio=args.overlap_ratio,
         strict_normal_sampling=args.strict_normal_sampling,
+        use_video_level_pooling=args.use_video_level_pooling,
         temporal_agg=args.temporal_agg,
         n_ctx=args.n_ctx,
         ctx_init=args.ctx_init,
