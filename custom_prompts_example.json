@@ -1,0 +1,16 @@
+{
+  "Normal": "a normal video without any anomaly, crime or unusual activity",
+  "Abuse": "a video showing physical abuse, hitting, punching or violence toward a person",
+  "Arrest": "a video of police officers arresting or apprehending a person",
+  "Arson": "a video showing fire, flames or a building burning",
+  "Assault": "a video of people attacking each other with weapons or physical force",
+  "Burglary": "a video of someone breaking into a building, stealing or ransacking property",
+  "Explosion": "a video showing an explosion, bomb detonation or blast",
+  "Fighting": "a video of multiple people engaged in violent physical combat",
+  "RoadAccidents": "a video of a car crash, traffic accident or vehicle collision",
+  "Robbery": "a video of armed robbery, mugging or violent theft",
+  "Shooting": "a video of a person shooting a gun or gunshot being fired",
+  "Shoplifting": "a video of someone stealing items from a store or retail location",
+  "Stealing": "a video of property theft, pickpocketing or stealing",
+  "Vandalism": "a video showing property damage, graffiti or destruction of property"
+}
