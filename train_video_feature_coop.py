@@ -183,7 +183,7 @@ def train_one_epoch(
     total = 0
 
     pbar = tqdm(data_loader, desc=desc, leave=True)
-    for features, labels in pbar:
+    for features, labels, _ in pbar:
         features = features.to(device)
         labels = labels.to(device)
 
@@ -227,7 +227,7 @@ def validate(
     all_preds = []
 
     pbar = tqdm(data_loader, desc=desc, leave=True)
-    for features, labels in pbar:
+    for features, labels, _ in pbar:
         features = features.to(device)
         labels_dev = labels.to(device)
 
@@ -272,7 +272,7 @@ def validate_video_level(
     video_logits = defaultdict(list)
     video_labels = {}
 
-    for features, labels in tqdm(data_loader, desc="Video-level eval", leave=True):
+    for features, labels, _ in tqdm(data_loader, desc="Video-level eval", leave=True):
         features = features.to(device)
         logits = model(features)
 
