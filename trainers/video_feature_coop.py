@@ -246,6 +246,7 @@ class PromptLearner(nn.Module):
     """Learnable prompt context for MobileCLIP-based CoOp.
 
     Follows trainers/coop.py:60-182 but adapted for open_clip tokenizer.
+    Supports class-specific initial prompts.
 
     Args:
         classnames: List of class name strings.
@@ -253,8 +254,11 @@ class PromptLearner(nn.Module):
         tokenizer: open_clip tokenizer.
         n_ctx: Number of learnable context tokens.
         ctx_init: Optional initialization string (e.g., "a video of a").
+                 Can also be a dict {classname: prompt_str} for class-specific init.
         csc: If True, use class-specific context vectors.
         class_token_position: Where to place class token - "end", "middle", or "front".
+        class_prompts: Dict of {classname: initial_prompt_str} for class-specific initialization.
+                      Alternative to ctx_init dict format.
     """
 
     def __init__(
@@ -266,6 +270,7 @@ class PromptLearner(nn.Module):
         ctx_init="",
         csc=False,
         class_token_position="end",
+        class_prompts=None,
     ):
         super().__init__()
         n_cls = len(classnames)
@@ -276,7 +281,50 @@ class PromptLearner(nn.Module):
         dtype = components['dtype']
         token_embedding = components['token_embedding']
 
-        if ctx_init:
+        # Check if class_prompts is provided (dict of {classname: prompt})
+        use_class_specific_init = class_prompts is not None and isinstance(class_prompts, dict)
+
+        if use_class_specific_init:
+            # Initialize context vectors from class-specific prompts
+            print("Initializing class-specific contexts from custom prompts")
+            ctx_vectors_list = []
+            prompt_prefixes = []
+
+            classnames_normalized = [name.replace("_", " ") for name in classnames]
+
+            for cls_name in classnames_normalized:
+                # Get class-specific prompt
+                prompt_str = class_prompts.get(cls_name, f"a video with {cls_name.lower()}")
+                prompt_str = prompt_str.replace("_", " ")
+
+                # Tokenize the prompt
+                prompt_tokens = tokenizer([prompt_str])
+                if not isinstance(prompt_tokens, torch.Tensor):
+                    prompt_tokens = torch.tensor(prompt_tokens)
+
+                with torch.no_grad():
+                    prompt_tokens = prompt_tokens.to(token_embedding.weight.device)
+                    embedding = token_embedding(prompt_tokens).type(dtype)
+
+                # Extract middle tokens (skip SOS and EOS)
+                # embedding shape: [1, seq_len, ctx_dim]
+                # Extract first n_ctx tokens after SOS
+                embedded = embedding[0, 1:, :]  # Skip SOS
+                if embedded.shape[0] >= n_ctx:
+                    ctx_vec = embedded[:n_ctx, :]
+                else:
+                    # If prompt has fewer tokens than n_ctx, pad with learnable tokens
+                    padding = torch.empty(n_ctx - embedded.shape[0], ctx_dim, dtype=dtype)
+                    nn.init.normal_(padding, std=0.02)
+                    ctx_vec = torch.cat([embedded, padding], dim=0)
+
+                ctx_vectors_list.append(ctx_vec)
+                prompt_prefixes.append(prompt_str)
+
+            ctx_vectors = torch.stack(ctx_vectors_list, dim=0)  # [n_cls, n_ctx, ctx_dim]
+            prompt_prefix = "class-specific"
+
+        elif ctx_init:
             # Initialize context vectors from given words
             ctx_init = ctx_init.replace("_", " ")
             n_ctx = len(ctx_init.split(" "))
@@ -289,7 +337,7 @@ class PromptLearner(nn.Module):
             with torch.no_grad():
                 # Move tokens to same device as token_embedding
                 prompt_tokens = prompt_tokens.to(token_embedding.weight.device)
-                embedding = token_embedding(prompt_tokens).type(dtype) # 토큰화된 단어 인덱스 텐서를 사전 학습된 CLIP의 토큰 임베딩 레이어에 통과시켜 고차원 임베딩 벡터로 변환
+                embedding = token_embedding(prompt_tokens).type(dtype)
             ctx_vectors = embedding[0, 1 : 1 + n_ctx, :]
             prompt_prefix = ctx_init
         else:
@@ -402,6 +450,7 @@ class VideoFeatureCLIP(nn.Module):
 
     No image encoder — features are passed directly.
     Temporal aggregation converts [B, T, D] -> [B, D] before similarity computation.
+    Supports class-specific custom initial prompts.
 
     Args:
         classnames: List of class name strings.
@@ -412,6 +461,7 @@ class VideoFeatureCLIP(nn.Module):
         csc: Class-specific context.
         class_token_position: Position of class token in prompt.
         temporal_agg: Temporal aggregation method ("mean", "max").
+        class_prompts: Dict of {classname: initial_prompt_str} for class-specific initialization.
     """
 
     def __init__(
@@ -424,12 +474,14 @@ class VideoFeatureCLIP(nn.Module):
         csc=False,
         class_token_position="end",
         temporal_agg="mean",
+        class_prompts=None,
     ):
         super().__init__()
         self.prompt_learner = PromptLearner(
             classnames, clip_model, tokenizer,
             n_ctx=n_ctx, ctx_init=ctx_init, csc=csc,
             class_token_position=class_token_position,
+            class_prompts=class_prompts,
         )
         self.text_encoder = TextEncoder(clip_model)
 

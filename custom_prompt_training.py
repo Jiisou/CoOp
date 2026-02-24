@@ -117,9 +117,13 @@ def main():
     )
 
     # Dataset arguments
-    parser.add_argument("--feature-dir", type=str, required=True,
+    parser.add_argument("--feature-dir", type=str, 
+                        # required=True,
+                        default="/mnt/c/JJS/UCF_Crimes/Features/MCi20-avgpooled/train",
                         help="Path to training feature directory")
-    parser.add_argument("--val-feature-dir", type=str, required=True,
+    parser.add_argument("--val-feature-dir", type=str, 
+                        # required=True,
+                        default="/mnt/c/JJS/UCF_Crimes/Features/MCi20-avgpooled/valid",
                         help="Path to validation feature directory")
 
     # Custom prompt arguments
@@ -143,7 +147,7 @@ def main():
     parser.add_argument("--num-workers", type=int, default=4)
 
     # Output arguments
-    parser.add_argument("--output-dir", type=str, default="./output/custom_prompts")
+    parser.add_argument("--output-dir", type=str, default="./output/custom_prompts_0224_0914")
     parser.add_argument("--save-prompts", action="store_true", default=True,
                         help="Save learned prompts after training")
 
@@ -247,28 +251,29 @@ def main():
     clip_model, tokenizer = load_mobileclip(
         pretrained_path=args.mobileclip_path,
         model_name=args.mobileclip_model,
-        device="cpu"
+        device="cuda"
     )
 
-    # Create model with custom context initialization
-    print("\nCreating VideoFeatureCLIP with custom prompts...")
+    # Create model with class-specific custom prompts
+    print("\nCreating VideoFeatureCLIP with class-specific custom prompts...")
 
-    # Get initial prompt string for ctx_init
-    # For CSC mode, we'll use the class prompts directly
-    ctx_init_str = " ".join(initial_prompts.get(cls, f"{cls}") for cls in classnames)
-
-    print(f"Combined context init: '{ctx_init_str}'")
+    print(f"\nInitial prompts per class:")
+    for cls in classnames:
+        prompt = initial_prompts.get(cls, f"a video with {cls.lower()}")
+        print(f"  {cls:15s}: {prompt}")
 
     model = VideoFeatureCLIP(
         classnames=classnames,
         clip_model=clip_model,
         tokenizer=tokenizer,
         n_ctx=args.n_ctx,
-        ctx_init=ctx_init_str,  # Use combined prompts
+        class_prompts=initial_prompts,  # Pass class-specific prompts for initialization
         csc=args.csc,
         class_token_position="end",
         temporal_agg="mean",
     )
+
+    print(f"\n✓ PromptLearner initialized with class-specific prompts")
 
     # Freeze everything except prompt_learner
     for name, param in model.named_parameters():
@@ -325,7 +330,7 @@ def main():
 
         if val_acc > best_acc:
             best_acc = val_acc
-            save_path = os.path.join(checkpoint_dir, "best_model.pth")
+            save_path = os.path.join(checkpoint_dir, "best_custom_prompt_model.pth")
             save_checkpoint(model, optimizer, epoch, val_loss, val_acc, save_path)
 
     # Extract and save learned prompts
@@ -335,7 +340,7 @@ def main():
 
     learned_prompts = extract_learned_prompts(model, classnames, tokenizer)
 
-    learned_prompts_path = os.path.join(args.output_dir, "learned_prompts.json")
+    learned_prompts_path = os.path.join(args.output_dir, "learned_prompts_from_custom.json")
     with open(learned_prompts_path, 'w') as f:
         # Convert numpy arrays to lists for JSON serialization
         json.dump(learned_prompts, f, indent=2)
@@ -347,7 +352,7 @@ def main():
     print("Training Complete")
     print("=" * 80)
     print(f"\nResults saved to: {args.output_dir}")
-    print(f"  - Checkpoint: {os.path.join(checkpoint_dir, 'best_model.pth')}")
+    print(f"  - Checkpoint: {os.path.join(checkpoint_dir, 'best_custom_prompt_model.pth')}")
     print(f"  - Initial prompts: {prompts_path}")
     print(f"  - Learned prompts: {learned_prompts_path}")
 

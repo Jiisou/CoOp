@@ -322,7 +322,7 @@ class VideoFeatureDataset(Dataset):
     def __len__(self) -> int:
         return len(self.samples)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int, str]:
         sample = self.samples[idx]
 
         feat = np.load(sample["npy_path"], mmap_mode="r")
@@ -336,7 +336,7 @@ class VideoFeatureDataset(Dataset):
             window = feat[sample["start_sec"]:sample["end_sec"]]  # [unit_duration, D]
             feature_tensor = torch.from_numpy(np.array(window)).float()
 
-        return feature_tensor, sample["label"]
+        return feature_tensor, sample["label"], sample["video_id"]
 
     def get_video_ids(self) -> List[str]:
         """Return list of video IDs for all samples (for video-level evaluation)."""
