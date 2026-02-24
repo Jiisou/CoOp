@@ -1,0 +1,16 @@
+{
+  "Normal": "a peaceful CCTV video, normal daily activity",
+  "Abuse": "An ABNORMAL video of a person being physically mistreated or hit.",
+  "Arrest": "An ABNORMAL video of officers arresting and handcuffing a suspect",
+  "Arson": "An ABNORMAL video of a building on fire with visible flames or spreading smoke",
+  "Assault": "An ABNORMAL video of aviolent physical assault or sudden attack on a person",
+  "Burglary": "An ABNORMAL video of someone breaking into a private property",
+  "Explosion": "An ABNORMAL video of a sudden blast or bomb detonation",
+  "Fighting": "An ABNORMAL video of group violence and aggressive fighting",
+  "RoadAccidents": "An ABNORMAL video of a car crash or vehicle collision on the road",
+  "Robbery": "An ABNORMAL video of criminal threatening someone, or a robbery",
+  "Shooting": "An ABNORMAL video of a person firing a gun or pistol",
+  "Shoplifting": "An ABNORMAL video of someone stealing items from a store shelf",
+  "Stealing": "An ABNORMAL video of a thief taking someone else's belonging and running away",
+  "Vandalism": "An ABNORMAL video of intentionally destroying or defacing property"
+}
