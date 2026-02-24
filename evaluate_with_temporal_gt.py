@@ -174,9 +174,11 @@ def main():
     parser = argparse.ArgumentParser(
         description="Evaluate CoOp model using temporal ground truth"
     )
-    parser.add_argument("--test-feature-dir", type=str, required=True,
+    parser.add_argument("--test-feature-dir", type=str, # required=True,
+                        default="/mnt/c/JJS/UCF_Crimes/Features/MCi20-avgpooled/test",
                         help="Path to test feature directory")
-    parser.add_argument("--annotation-file", type=str, required=True,
+    parser.add_argument("--annotation-file", type=str, # required=True,
+                        default="./annotation/Temporal_Anomaly_Annotation_For_Testing_Videos/Txt_formate/Temporal_Anomaly_Annotation.txt",
                         help="Path to temporal annotation file (Temporal_Anomaly_Annotation.txt)")
     parser.add_argument("--checkpoint-path", type=str, required=True,
                         help="Path to model checkpoint")
@@ -279,6 +281,38 @@ def main():
         k: v for k, v in state_dict.items()
         if "token_prefix" not in k and "token_suffix" not in k
     }
+
+    # Handle n_ctx mismatch between checkpoint and current model
+    if "ctx" in state_dict:
+        checkpoint_ctx = state_dict["ctx"]
+        current_ctx_shape = model.prompt_learner.ctx.shape
+        checkpoint_ctx_shape = checkpoint_ctx.shape
+
+        if checkpoint_ctx_shape != current_ctx_shape:
+            print(f"\nHandling n_ctx mismatch:")
+            print(f"  Checkpoint ctx shape: {checkpoint_ctx_shape}")
+            print(f"  Current model ctx shape: {current_ctx_shape}")
+
+            if checkpoint_ctx_shape[0] != current_ctx_shape[0]:
+                # n_cls mismatch - skip loading ctx
+                print(f"  ⚠ Number of classes mismatch, skipping ctx loading")
+                state_dict.pop("ctx")
+            elif checkpoint_ctx_shape[1] < current_ctx_shape[1]:
+                # Checkpoint has fewer context tokens - pad with random initialization
+                n_cls, checkpoint_n_ctx, ctx_dim = checkpoint_ctx_shape
+                current_n_ctx = current_ctx_shape[1]
+                padding_n_ctx = current_n_ctx - checkpoint_n_ctx
+
+                print(f"  Padding: {checkpoint_n_ctx} → {current_n_ctx} tokens")
+                padding = torch.empty(n_cls, padding_n_ctx, ctx_dim, dtype=checkpoint_ctx.dtype)
+                torch.nn.init.normal_(padding, std=0.02)
+                padded_ctx = torch.cat([checkpoint_ctx, padding], dim=1)
+                state_dict["ctx"] = padded_ctx
+            elif checkpoint_ctx_shape[1] > current_ctx_shape[1]:
+                # Checkpoint has more context tokens - truncate
+                print(f"  Truncating: {checkpoint_n_ctx} → {current_n_ctx} tokens")
+                state_dict["ctx"] = checkpoint_ctx[:, :current_ctx_shape[1], :]
+
     model.prompt_learner.load_state_dict(state_dict, strict=False)
     model = model.to(device)
     print(f"✓ Loaded checkpoint from {args.checkpoint_path}")

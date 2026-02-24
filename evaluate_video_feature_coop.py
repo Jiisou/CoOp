@@ -51,6 +51,40 @@ def load_checkpoint(model, checkpoint_path, device):
         k: v for k, v in state_dict.items()
         if "token_prefix" not in k and "token_suffix" not in k
     }
+
+    # Handle n_ctx mismatch between checkpoint and current model
+    if "ctx" in state_dict:
+        checkpoint_ctx = state_dict["ctx"]
+        current_ctx_shape = model.prompt_learner.ctx.shape
+        checkpoint_ctx_shape = checkpoint_ctx.shape
+
+        if checkpoint_ctx_shape != current_ctx_shape:
+            print(f"Handling n_ctx mismatch:")
+            print(f"  Checkpoint ctx shape: {checkpoint_ctx_shape}")
+            print(f"  Current model ctx shape: {current_ctx_shape}")
+
+            if checkpoint_ctx_shape[0] != current_ctx_shape[0]:
+                # n_cls mismatch - skip loading ctx
+                print(f"  ⚠ Number of classes mismatch, skipping ctx loading")
+                state_dict.pop("ctx")
+            elif checkpoint_ctx_shape[1] < current_ctx_shape[1]:
+                # Checkpoint has fewer context tokens - pad with random initialization
+                n_cls, checkpoint_n_ctx, ctx_dim = checkpoint_ctx_shape
+                current_n_ctx = current_ctx_shape[1]
+                padding_n_ctx = current_n_ctx - checkpoint_n_ctx
+
+                print(f"  Padding: {checkpoint_n_ctx} → {current_n_ctx} tokens")
+                padding = torch.empty(n_cls, padding_n_ctx, ctx_dim, dtype=checkpoint_ctx.dtype)
+                torch.nn.init.normal_(padding, std=0.02)
+                padded_ctx = torch.cat([checkpoint_ctx, padding], dim=1)
+                state_dict["ctx"] = padded_ctx
+            elif checkpoint_ctx_shape[1] > current_ctx_shape[1]:
+                # Checkpoint has more context tokens - truncate
+                checkpoint_n_ctx = checkpoint_ctx_shape[1]
+                current_n_ctx = current_ctx_shape[1]
+                print(f"  Truncating: {checkpoint_n_ctx} → {current_n_ctx} tokens")
+                state_dict["ctx"] = checkpoint_ctx[:, :current_ctx_shape[1], :]
+
     model.prompt_learner.load_state_dict(state_dict, strict=False)
 
     print(f"✓ Loaded checkpoint from {checkpoint_path}")
