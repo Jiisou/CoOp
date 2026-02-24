@@ -127,7 +127,8 @@ def main():
                         help="Path to validation feature directory")
 
     # Custom prompt arguments
-    parser.add_argument("--initial-prompts-file", type=str, default=None,
+    parser.add_argument("--initial-prompts-file", type=str, #default=None,
+                        required=True,
                         help="Path to JSON file with custom initial prompts per class")
     parser.add_argument("--save-initial-prompts", type=str, default=None,
                         help="Save generated initial prompts to this path")
@@ -147,7 +148,7 @@ def main():
     parser.add_argument("--num-workers", type=int, default=4)
 
     # Output arguments
-    parser.add_argument("--output-dir", type=str, default="./output/custom_prompts_0224_0914")
+    parser.add_argument("--output-dir", type=str, default="./output/custom_prompts_0224_0955")
     parser.add_argument("--save-prompts", action="store_true", default=True,
                         help="Save learned prompts after training")
 
@@ -162,24 +163,33 @@ def main():
 
     # Load dataset
     print("\nLoading training dataset...")
+    print("Dataset Configuration:")
+    print("  - Normal samples: Only from 'Normal' folder (strict_normal_sampling=True)")
+    print("  - Abnormal samples: Event windows only")
+    print("    * Event overlap windows: ✓ Include (abnormal label)")
+    print("    * Pre-event windows: ✓ Include (abnormal label)")
+    print("    * Post-event windows: ✗ Exclude (too noisy)")
+
     train_dataset = VideoFeatureDataset(
         feature_dir=args.feature_dir,
-        normal_class="Normal",
+        normal_class="Normal",  # Only Normal folder used for normal samples
         unit_duration=1,
         overlap_ratio=0.0,
-        strict_normal_sampling=True,
+        strict_normal_sampling=True,  # ← Discard post-event windows in abnormal videos
         use_video_level_pooling=False,
         verbose=True,
         seed=42,
     )
 
     print("\nLoading validation dataset...")
+    print("Validation uses strict_normal_sampling=False (keep all windows for evaluation)")
+
     val_dataset = VideoFeatureDataset(
         feature_dir=args.val_feature_dir,
-        normal_class="Normal",
+        normal_class="Normal",  # Only Normal folder used for normal samples
         unit_duration=1,
         overlap_ratio=0.0,
-        strict_normal_sampling=False,
+        strict_normal_sampling=False,  # ← Keep all windows for evaluation
         use_video_level_pooling=False,
         verbose=True,
         seed=42,
