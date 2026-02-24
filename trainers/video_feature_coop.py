@@ -197,12 +197,28 @@ class TextEncoder(nn.Module):
 
         Args:
             prompts: [n_cls, seq_len, ctx_dim] prompt embeddings.
+                     seq_len may vary due to class-specific frozen prompts
             tokenized_prompts: [n_cls, seq_len] token indices (for EOT position).
 
         Returns:
             text_features: [n_cls, embed_dim] text feature vectors.
         """
-        x = prompts + self.positional_embedding.type(prompts.dtype)
+        # Handle variable sequence length due to frozen initial prompts
+        seq_len = prompts.shape[1]
+        pos_emb = self.positional_embedding.type(prompts.dtype)
+
+        if seq_len != pos_emb.shape[0]:
+            # Positional embedding size mismatch (e.g., frozen prompts make seq longer)
+            if seq_len > pos_emb.shape[0]:
+                # Extend positional embedding by repeating last position
+                pad_len = seq_len - pos_emb.shape[0]
+                pad_emb = pos_emb[-1:, :].expand(pad_len, -1)
+                pos_emb = torch.cat([pos_emb, pad_emb], dim=0)
+            else:
+                # Truncate positional embedding (shouldn't happen with frozen prompts)
+                pos_emb = pos_emb[:seq_len, :]
+
+        x = prompts + pos_emb.type(prompts.dtype)
         x = x.permute(1, 0, 2)  # NLD -> LND
 
         # Apply attention mask if available
@@ -210,7 +226,14 @@ class TextEncoder(nn.Module):
         if attn_mask is not None:
             attn_mask = attn_mask.to(x.device)
             if attn_mask.shape[0] != x.shape[0]:
-                attn_mask = attn_mask[:x.shape[0], :x.shape[0]]
+                # Extend attention mask if needed
+                if x.shape[0] > attn_mask.shape[0]:
+                    pad_mask = attn_mask[-1:, :].expand(x.shape[0] - attn_mask.shape[0], -1)
+                    attn_mask = torch.cat([attn_mask, pad_mask], dim=0)
+                    pad_mask_col = attn_mask[:, -1:].expand(-1, x.shape[0] - attn_mask.shape[1])
+                    attn_mask = torch.cat([attn_mask, pad_mask_col], dim=1)
+                else:
+                    attn_mask = attn_mask[:x.shape[0], :x.shape[0]]
 
         x = self.transformer(x, attn_mask=attn_mask)
         x = x.permute(1, 0, 2)  # LND -> NLD
