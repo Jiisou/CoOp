@@ -36,6 +36,7 @@ from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+from sklearn.metrics import roc_auc_score
 
 from datasets.video_features import VideoFeatureDataset
 from trainers.video_feature_coop import load_mobileclip, VideoFeatureCLIP
@@ -218,13 +219,14 @@ def validate(
     device: torch.device,
     classnames: list = None,
     desc: str = "Validation",
-) -> Tuple[float, float, dict]:
-    """Validate model. Returns (avg_loss, accuracy, per_class_acc)."""
+) -> Tuple[float, float, dict, float]:
+    """Validate model. Returns (avg_loss, accuracy, per_class_acc, auc)."""
     model.eval()
     loss_meter = AverageMeter()
 
     all_labels = []
     all_preds = []
+    all_logits = []
 
     pbar = tqdm(data_loader, desc=desc, leave=True)
     for features, labels, _ in pbar:
@@ -239,13 +241,22 @@ def validate(
         loss_meter.update(loss.item(), features.size(0))
         all_labels.extend(labels.numpy())
         all_preds.extend(predicted.cpu().numpy())
+        all_logits.extend(F.softmax(logits, dim=1).cpu().numpy())
 
         pbar.set_postfix({"loss": f"{loss_meter.avg:.4f}"})
 
     all_labels = np.array(all_labels)
     all_preds = np.array(all_preds)
+    all_logits = np.array(all_logits)
 
     accuracy = 100.0 * (all_labels == all_preds).sum() / len(all_labels)
+
+    # Calculate AUC (one-vs-rest for multi-class)
+    try:
+        auc = roc_auc_score(all_labels, all_logits, multi_class="ovr", zero_division=0)
+    except Exception as e:
+        auc = 0.0
+        print(f"Warning: AUC calculation failed - {e}")
 
     # Per-class accuracy
     per_class_acc = {}
@@ -255,7 +266,7 @@ def validate(
         cls_name = classnames[cls_idx] if classnames and cls_idx < len(classnames) else f"class_{cls_idx}"
         per_class_acc[cls_name] = cls_acc
 
-    return loss_meter.avg, accuracy, per_class_acc
+    return loss_meter.avg, accuracy, per_class_acc, auc
 
 
 @torch.no_grad()
@@ -504,10 +515,11 @@ def train(
         print("Evaluation Only Mode")
         print("=" * 60)
 
-        val_loss, val_acc, per_class = validate(
+        val_loss, val_acc, per_class, val_auc = validate(
             model, val_loader, device, classnames, desc="Test",
         )
         print(f"Frame-level accuracy: {val_acc:.2f}%")
+        print(f"Frame-level AUC: {val_auc:.4f}")
         for cls_name, cls_acc in per_class.items():
             print(f"  {cls_name}: {cls_acc:.2f}%")
 
@@ -535,14 +547,14 @@ def train(
             desc=f"Epoch {epoch + 1}/{epochs}",
         )
 
-        val_loss, val_acc, per_class = validate(
+        val_loss, val_acc, per_class, val_auc = validate(
             model, val_loader, device, classnames, desc="Validation",
         )
 
         print(
             f"Epoch {epoch + 1}: "
             f"Train Loss={train_loss:.4f}, Acc={train_acc:.1f}% | "
-            f"Val Loss={val_loss:.4f}, Acc={val_acc:.1f}%"
+            f"Val Loss={val_loss:.4f}, Acc={val_acc:.1f}%, AUC={val_auc:.4f}"
         )
         for cls_name, cls_acc in per_class.items():
             print(f"  {cls_name}: {cls_acc:.1f}%")
@@ -550,6 +562,7 @@ def train(
         # TensorBoard
         writer.add_scalars("Loss", {"train": train_loss, "val": val_loss}, epoch)
         writer.add_scalars("Accuracy", {"train": train_acc, "val": val_acc}, epoch)
+        writer.add_scalar("AUC", val_auc, epoch)
         writer.add_scalar("LR", get_lr(optimizer), epoch)
         for cls_name, cls_acc in per_class.items():
             writer.add_scalar(f"PerClass/{cls_name}", cls_acc, epoch)

@@ -318,14 +318,14 @@ def main():
             desc=f"Epoch {epoch + 1}/{args.epochs}",
         )
 
-        val_loss, val_acc, per_class = validate(
+        val_loss, val_acc, per_class, val_auc = validate(
             model, val_loader, device, classnames
         )
 
         print(
             f"Epoch {epoch + 1}: "
             f"Train Loss={train_loss:.4f}, Acc={train_acc:.1f}% | "
-            f"Val Loss={val_loss:.4f}, Acc={val_acc:.1f}%"
+            f"Val Loss={val_loss:.4f}, Acc={val_acc:.1f}%, AUC={val_auc:.4f}"
         )
 
         if val_acc > best_acc:

@@ -285,19 +285,21 @@ class PromptLearner(nn.Module):
         use_class_specific_init = class_prompts is not None and isinstance(class_prompts, dict)
 
         if use_class_specific_init:
-            # Initialize context vectors from class-specific prompts
+            # Initialize with class-specific frozen prompts + learnable context tokens
+            # Structure: [SOS] [frozen_prompt_embedding] [learnable_X X...X] [class_name.EOS]
             print("Initializing class-specific contexts from custom prompts")
-            ctx_vectors_list = []
-            prompt_prefixes = []
+            print("  Structure: [frozen_prompt] + [learnable_context_tokens]")
 
+            frozen_prompts_list = []
+            learnable_ctx_list = []
             classnames_normalized = [name.replace("_", " ") for name in classnames]
 
             for cls_name in classnames_normalized:
-                # Get class-specific prompt
+                # Get class-specific prompt (frozen)
                 prompt_str = class_prompts.get(cls_name, f"a video with {cls_name.lower()}")
                 prompt_str = prompt_str.replace("_", " ")
 
-                # Tokenize the prompt
+                # Tokenize and embed the prompt (frozen)
                 prompt_tokens = tokenizer([prompt_str])
                 if not isinstance(prompt_tokens, torch.Tensor):
                     prompt_tokens = torch.tensor(prompt_tokens)
@@ -306,23 +308,30 @@ class PromptLearner(nn.Module):
                     prompt_tokens = prompt_tokens.to(token_embedding.weight.device)
                     embedding = token_embedding(prompt_tokens).type(dtype)
 
-                # Extract middle tokens (skip SOS and EOS)
-                # embedding shape: [1, seq_len, ctx_dim]
-                # Extract first n_ctx tokens after SOS
-                embedded = embedding[0, 1:, :]  # Skip SOS
-                if embedded.shape[0] >= n_ctx:
-                    ctx_vec = embedded[:n_ctx, :]
-                else:
-                    # If prompt has fewer tokens than n_ctx, pad with learnable tokens
-                    padding = torch.empty(n_ctx - embedded.shape[0], ctx_dim, dtype=dtype)
-                    nn.init.normal_(padding, std=0.02)
-                    ctx_vec = torch.cat([embedded, padding], dim=0)
+                # Extract prompt tokens (skip SOS and EOS)
+                frozen_embed = embedding[0, 1:, :]  # [prompt_len, ctx_dim]
 
-                ctx_vectors_list.append(ctx_vec)
-                prompt_prefixes.append(prompt_str)
+                # Create learnable context tokens ("X X ... X")
+                # These will be appended after the frozen prompt
+                learnable_padding = torch.empty(n_ctx, ctx_dim, dtype=dtype)
+                nn.init.normal_(learnable_padding, std=0.02)
 
-            ctx_vectors = torch.stack(ctx_vectors_list, dim=0)  # [n_cls, n_ctx, ctx_dim]
-            prompt_prefix = "class-specific"
+                frozen_prompts_list.append(frozen_embed)
+                learnable_ctx_list.append(learnable_padding)
+
+            # Register frozen prompt embeddings as buffers (not learnable)
+            self.frozen_prompt_embeds = []
+            max_prompt_len = 0
+            for i, frozen_embed in enumerate(frozen_prompts_list):
+                max_prompt_len = max(max_prompt_len, frozen_embed.shape[0])
+                self.register_buffer(f"frozen_prompt_{i}", frozen_embed)
+
+            self.frozen_prompt_lengths = [fe.shape[0] for fe in frozen_prompts_list]
+            self.use_class_specific_init = True
+
+            # Only learnable context tokens as parameters
+            ctx_vectors = torch.stack(learnable_ctx_list, dim=0)  # [n_cls, n_ctx, ctx_dim]
+            prompt_prefix = "class-specific [frozen_prompt + learnable_context]"
 
         elif ctx_init:
             # Initialize context vectors from given words
@@ -350,6 +359,7 @@ class PromptLearner(nn.Module):
                 ctx_vectors = torch.empty(n_ctx, ctx_dim, dtype=dtype)
             nn.init.normal_(ctx_vectors, std=0.02)
             prompt_prefix = " ".join(["X"] * n_ctx)
+            self.use_class_specific_init = False
 
         print(f'Initial context: "{prompt_prefix}"')
         print(f"Number of context words (tokens): {n_ctx}")
@@ -406,7 +416,21 @@ class PromptLearner(nn.Module):
         prefix = self.token_prefix
         suffix = self.token_suffix
 
-        if self.class_token_position == "end":
+        # Handle class-specific initialization with frozen prompts + learnable context
+        if self.use_class_specific_init:
+            # Combine frozen prompt + learnable context for each class
+            # Structure: [SOS] [frozen_prompt] [learnable_context_tokens] [class_name.EOS]
+            prompts_list = []
+            for i in range(self.n_cls):
+                frozen_prompt = getattr(self, f"frozen_prompt_{i}")
+                learnable_ctx = ctx[i : i + 1, :, :]  # [1, n_ctx, ctx_dim]
+
+                # Concatenate: prefix (SOS) + frozen_prompt + learnable_ctx + suffix
+                combined = torch.cat([prefix[i : i + 1, :, :], frozen_prompt.unsqueeze(0),
+                                    learnable_ctx, suffix[i : i + 1, :, :]], dim=1)
+                prompts_list.append(combined)
+            prompts = torch.cat(prompts_list, dim=0)
+        elif self.class_token_position == "end":
             prompts = torch.cat([prefix, ctx, suffix], dim=1)
 
         elif self.class_token_position == "middle":
