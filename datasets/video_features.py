@@ -111,6 +111,7 @@ class VideoFeatureDataset(Dataset):
         self.annotations: Dict[str, List[Tuple[float, float]]] = defaultdict(list)
 
         self._discarded_post_event = 0
+        self._discarded_pre_event = 0
         self._total_windows = 0
 
         random.seed(seed)
@@ -278,11 +279,15 @@ class VideoFeatureDataset(Dataset):
                         break
 
                 if not overlaps_event:
-                    # Strict normal filtering: discard post-event normal windows
-                    if self.strict_normal_sampling and end_sec > earliest_event_start:
-                        self._discarded_post_event += 1
+                    # Strict normal filtering: discard both pre- and post-event windows
+                    if self.strict_normal_sampling:
+                        # Determine if this is pre- or post-event
+                        if end_sec > earliest_event_start:
+                            self._discarded_post_event += 1
+                        else:
+                            self._discarded_pre_event += 1
                         continue
-                    # Non-overlapping windows before events keep the class label
+                    # Non-strict mode: keep pre-event context
                     # (they are pre-event context from the same action class)
 
             self.samples.append({
@@ -307,7 +312,9 @@ class VideoFeatureDataset(Dataset):
             print(f"Unit duration: {self.unit_duration}s, Overlap: {self.overlap_ratio}")
             print(f"Strict normal sampling: {self.strict_normal_sampling}")
             print(f"Total windows created: {self._total_windows}")
-            print(f"Discarded post-event windows: {self._discarded_post_event}")
+            if self.strict_normal_sampling:
+                print(f"Discarded pre-event windows: {self._discarded_pre_event}")
+                print(f"Discarded post-event windows: {self._discarded_post_event}")
             print(f"Final samples: {len(self.samples)}")
 
         # Per-class distribution

@@ -102,7 +102,7 @@ def extract_learned_prompts(model, classnames, tokenizer):
     results = {}
     for i, classname in enumerate(classnames):
         results[classname] = {
-            'context_vector': ctx[i].cpu().numpy().tolist(),
+            'context_vector': ctx[i].detach().cpu().numpy().tolist(),
             'context_shape': list(ctx[i].shape),
             'full_prompt_embedding': full_prompts[i].cpu().detach().numpy().tolist(),
             'full_prompt_shape': list(full_prompts[i].shape),
@@ -117,18 +117,22 @@ def main():
     )
 
     # Dataset arguments
-    parser.add_argument("--feature-dir", type=str, 
+    parser.add_argument("--feature-dir", type=str,
                         # required=True,
                         default="/mnt/c/JJS/UCF_Crimes/Features/MCi20-avgpooled/train",
                         help="Path to training feature directory")
-    parser.add_argument("--val-feature-dir", type=str, 
+    parser.add_argument("--val-feature-dir", type=str,
                         # required=True,
                         default="/mnt/c/JJS/UCF_Crimes/Features/MCi20-avgpooled/valid",
                         help="Path to validation feature directory")
+    parser.add_argument("--annotation-dir", type=str, 
+                        default="/mnt/c/JJS/UCF_Crimes/Annotations/train",
+                        help="Path to annotation directory with event timing CSV files")
 
     # Custom prompt arguments
-    parser.add_argument("--initial-prompts-file", type=str, #default=None,
-                        required=True,
+    parser.add_argument("--initial-prompts-file", type=str, 
+                        default="./annotation/initial_prompts.json",
+                        # required=True,
                         help="Path to JSON file with custom initial prompts per class")
     parser.add_argument("--save-initial-prompts", type=str, default=None,
                         help="Save generated initial prompts to this path")
@@ -144,7 +148,7 @@ def main():
     # Training arguments
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--lr", type=float, default=0.002)
+    parser.add_argument("--lr", type=float, default=0.01)  # Increased from 0.002 for faster learning
     parser.add_argument("--num-workers", type=int, default=4)
 
     # Output arguments
@@ -165,17 +169,18 @@ def main():
     print("\nLoading training dataset...")
     print("Dataset Configuration:")
     print("  - Normal samples: Only from 'Normal' folder (strict_normal_sampling=True)")
-    print("  - Abnormal samples: Event windows only")
+    print("  - Abnormal samples: Event windows only (when annotations provided)")
     print("    * Event overlap windows: ✓ Include (abnormal label)")
-    print("    * Pre-event windows: ✓ Include (abnormal label)")
-    print("    * Post-event windows: ✗ Exclude (too noisy)")
+    print("    * Pre-event windows : ✗ Exclude (strict mode)")
+    print("    * Post-event windows: ✗ Exclude (strict mode)")
 
     train_dataset = VideoFeatureDataset(
         feature_dir=args.feature_dir,
+        annotation_dir=args.annotation_dir,
         normal_class="Normal",  # Only Normal folder used for normal samples
         unit_duration=1,
         overlap_ratio=0.0,
-        strict_normal_sampling=True,  # ← Discard post-event windows in abnormal videos
+        strict_normal_sampling=True,  # ← Discard pre/post-event windows in abnormal videos
         use_video_level_pooling=False,
         verbose=True,
         seed=42,
@@ -186,10 +191,11 @@ def main():
 
     val_dataset = VideoFeatureDataset(
         feature_dir=args.val_feature_dir,
+        annotation_dir=args.annotation_dir,
         normal_class="Normal",  # Only Normal folder used for normal samples
         unit_duration=1,
         overlap_ratio=0.0,
-        strict_normal_sampling=False,  # ← Keep all windows for evaluation
+        strict_normal_sampling=True, 
         use_video_level_pooling=False,
         verbose=True,
         seed=42,
@@ -197,6 +203,19 @@ def main():
 
     classnames = train_dataset.classnames
     num_classes = len(classnames)
+
+    # Print class distribution
+    print("\nClass Distribution in Training Set:")
+    train_labels = train_dataset.get_labels()
+    for cls_idx, cls_name in enumerate(classnames):
+        count = sum(1 for label in train_labels if label == cls_idx)
+        print(f"  {cls_name:15s}: {count:6d} samples ({count/len(train_labels)*100:5.1f}%)")
+
+    print("\nClass Distribution in Validation Set:")
+    val_labels = val_dataset.get_labels()
+    for cls_idx, cls_name in enumerate(classnames):
+        count = sum(1 for label in val_labels if label == cls_idx)
+        print(f"  {cls_name:15s}: {count:6d} samples ({count/len(val_labels)*100:5.1f}%)")
 
     train_loader = DataLoader(
         train_dataset,
@@ -306,8 +325,9 @@ def main():
     total_steps = len(train_loader) * args.epochs
     warmup_steps = len(train_loader) * 1
 
+    # Warmup from 10% of LR to full LR over first epoch
     warmup_scheduler = LinearLR(
-        optimizer, start_factor=1e-5 / args.lr, total_iters=warmup_steps,
+        optimizer, start_factor=0.1, total_iters=warmup_steps,
     )
     main_scheduler = CosineAnnealingLR(
         optimizer, T_max=total_steps - warmup_steps,
@@ -320,6 +340,95 @@ def main():
 
     best_acc = 0.0
     checkpoint_dir = os.path.join(args.output_dir, "checkpoints")
+
+    # Debug gradient flow on first batch
+    print("\n" + "=" * 80)
+    print("Gradient Flow Debug (First Batch)")
+    print("=" * 80)
+    debug_first_batch = True
+    for batch_idx, batch in enumerate(train_loader):
+        if not debug_first_batch:
+            break
+
+        features, labels, _ = batch
+        features = features.to(device)
+        labels = labels.to(device)
+
+        print(f"\n1. Input Shapes:")
+        print(f"   Features: {features.shape}")
+        print(f"   Labels: {labels.shape}")
+
+        # Forward pass
+        print(f"\n2. Forward Pass:")
+        with torch.no_grad():
+            logits = model(features)
+            print(f"   Logits shape: {logits.shape}")
+            print(f"   Logits range: [{logits.min().item():.4f}, {logits.max().item():.4f}]")
+
+        # Check learnable parameters before backward
+        print(f"\n3. Learnable Parameters (before backward):")
+        total_params = 0
+        for name, param in model.prompt_learner.named_parameters():
+            if param.requires_grad:
+                print(f"   {name}: {param.shape}, requires_grad={param.requires_grad}")
+                if param.grad is not None:
+                    print(f"     → Existing grad: {param.grad.shape}")
+                total_params += param.numel()
+        print(f"   Total learnable params: {total_params:,}")
+
+        # Forward pass with loss
+        print(f"\n4. Loss Computation:")
+        logits = model(features)
+        loss = torch.nn.functional.cross_entropy(logits, labels)
+        print(f"   Loss: {loss.item():.6f}")
+        print(f"   Loss requires_grad: {loss.requires_grad}")
+
+        # Backward pass
+        print(f"\n5. Backward Pass:")
+        optimizer.zero_grad()
+        loss.backward()
+
+        # Check gradients after backward
+        print(f"\n6. Gradients (after backward):")
+        max_grad = 0.0
+        min_grad = float('inf')
+        zero_grad_params = 0
+
+        for name, param in model.prompt_learner.named_parameters():
+            if param.requires_grad and param.grad is not None:
+                grad_norm = param.grad.norm().item()
+                max_grad = max(max_grad, grad_norm)
+                min_grad = min(min_grad, grad_norm)
+
+                if grad_norm < 1e-8:
+                    zero_grad_params += 1
+                    print(f"   {name}: grad_norm={grad_norm:.2e} ⚠ (near zero!)")
+                else:
+                    print(f"   {name}: grad_norm={grad_norm:.6f} ✓")
+            elif param.requires_grad:
+                zero_grad_params += 1
+                print(f"   {name}: NO GRADIENT ❌")
+
+        print(f"\n   Max gradient norm: {max_grad:.6f}")
+        print(f"   Min gradient norm: {min_grad:.6f}")
+        print(f"   Zero/near-zero gradients: {zero_grad_params}")
+
+        # Optimizer step
+        print(f"\n7. Optimizer Step:")
+        print(f"   LR: {optimizer.param_groups[0]['lr']:.6f}")
+        optimizer.step()
+
+        print(f"\n8. Parameter Updates (after step):")
+        for name, param in model.prompt_learner.named_parameters():
+            if param.requires_grad:
+                print(f"   {name}: param_norm={param.norm().item():.6f}")
+
+        debug_first_batch = False
+        break
+
+    print("\n" + "=" * 80)
+    print("Starting Training Epochs")
+    print("=" * 80 + "\n")
 
     for epoch in range(args.epochs):
         train_loss, train_acc = train_one_epoch(
