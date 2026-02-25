@@ -87,7 +87,7 @@ def time_to_frame(time_sec, fps=25.0):
     return int(time_sec * fps)
 
 
-def get_temporal_label(frame_idx, events, fps=25.0):
+def get_temporal_label(frame_idx, events, fps=30.0):
     """Get binary label for a frame based on events.
 
     Args:
@@ -104,7 +104,7 @@ def get_temporal_label(frame_idx, events, fps=25.0):
     return 0
 
 
-def create_frame_level_labels(all_video_ids, annotations, fps=25.0):
+def create_frame_level_labels(all_video_ids, annotations, fps=30.0):
     """Create frame-level binary labels from temporal annotations.
 
     Returns:
@@ -257,12 +257,20 @@ def main():
         device="cpu"
     )
 
+    # Create default class-specific prompts for proper ctx initialization
+    default_prompts = {}
+    for cls in classnames:
+        if cls.lower() == "normal":
+            default_prompts[cls] = "a normal scene without any anomaly"
+        else:
+            default_prompts[cls] = f"a video with {cls.lower()} event"
+
     model = VideoFeatureCLIP(
         classnames=classnames,
         clip_model=clip_model,
         tokenizer=tokenizer,
         n_ctx=args.n_ctx,
-        ctx_init="",
+        class_prompts=default_prompts,  # Use class-specific prompts for proper ctx shape [n_cls, n_ctx, ctx_dim]
         csc=args.csc,
         class_token_position="end",
         temporal_agg="mean",
@@ -455,19 +463,28 @@ def main():
         anomaly_class_labels = all_labels[valid_mask][anomaly_mask]
         anomaly_class_probs = valid_class_probs[anomaly_mask]
 
+        # Remove Normal class from anomaly evaluation
+        normal_idx = classnames.index(args.normal_class) if args.normal_class in classnames else 0
+        anomaly_class_probs_no_normal = np.delete(anomaly_class_probs, normal_idx, axis=1)
+
         if len(np.unique(anomaly_class_labels)) > 1:
             try:
-                # Multi-class AUC for anomaly samples
+                # Multi-class AUC for anomaly samples (excluding Normal class)
                 anomaly_auc = roc_auc_score(
                     anomaly_class_labels,
-                    anomaly_class_probs,
+                    anomaly_class_probs_no_normal,
                     multi_class="ovr"
                 )
                 print(f"    Multi-class AUC (among anomalies): {anomaly_auc:.4f}")
                 anomaly_only_results["auc_multi_class"] = float(anomaly_auc)
 
-                # Per-anomaly-class precision
-                anomaly_preds = anomaly_class_probs.argmax(axis=1)
+                # Per-anomaly-class predictions (using anomaly classes only, excluding Normal)
+                anomaly_preds_local = anomaly_class_probs_no_normal.argmax(axis=1)
+                # Map back to original class indices (skip Normal class)
+                anomaly_preds = np.array([
+                    idx if idx < normal_idx else idx + 1
+                    for idx in anomaly_preds_local
+                ])
                 anomaly_accuracy = accuracy_score(anomaly_class_labels, anomaly_preds)
                 print(f"    Anomaly-only Accuracy: {anomaly_accuracy:.4f}")
                 anomaly_only_results["accuracy"] = float(anomaly_accuracy)
