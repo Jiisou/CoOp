@@ -1,0 +1,23 @@
+{
+  "multi_class": {
+    "accuracy": 0.5890574214517876,
+    "weighted_precision": 0.5020210711973256,
+    "weighted_recall": 0.5890574214517876,
+    "weighted_f1": 0.4834956594735054
+  },
+  "binary_anomaly_detection": {
+    "accuracy": 0.7847237269772481,
+    "precision": 0.8589967073406934,
+    "recall": 0.5773987762010155,
+    "f1": 0.6905948302709436,
+    "auc_roc": 0.9027999076352601,
+    "auc_pr": 0.8733575368563835
+  },
+  "anomaly_only": {},
+  "statistics": {
+    "total_samples": 36920,
+    "samples_with_gt": 36920,
+    "anomaly_samples": 15362,
+    "normal_samples": 21558
+  }
+}

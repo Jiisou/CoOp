@@ -1,0 +1,20 @@
+{
+  "checkpoint_path": "/mnt/c/Users/USER/Desktop/CoOp/output/custom_prompts_0224_0955/checkpoints/best_custom_prompt_model.pth",
+  "epoch": 16,
+  "n_cls": 14,
+  "n_ctx": 16,
+  "ctx_dim": 512,
+  "prompt_seq_len": 153,
+  "embed_dim": 512,
+  "use_class_specific_init": true,
+  "deterministic_ok": true,
+  "max_abs_diff_text_features": 0.0,
+  "mobileclip_model": "mobileclip2_s0",
+  "mobileclip_path": null,
+  "device": "cuda",
+  "classnames": null,
+  "files": {
+    "cache_pt": "./output/prompt_cache_test/prompt_text_cache.pt",
+    "cache_npz": "./output/prompt_cache_test/prompt_text_cache.npz"
+  }
+}
