@@ -192,13 +192,14 @@ class TextEncoder(nn.Module):
         self.text_projection = components['text_projection']
         self.attn_mask = components['attn_mask']
 
-    def forward(self, prompts, tokenized_prompts):
+    def forward(self, prompts, tokenized_prompts, eot_indices=None):
         """Encode prompt embeddings through text transformer.
 
         Args:
             prompts: [n_cls, seq_len, ctx_dim] prompt embeddings.
                      seq_len may vary due to class-specific frozen prompts
-            tokenized_prompts: [n_cls, seq_len] token indices (for EOT position).
+            tokenized_prompts: [n_cls, seq_len] token indices (fallback for EOT position).
+            eot_indices: Optional [n_cls] precomputed EOT positions aligned to prompts.
 
         Returns:
             text_features: [n_cls, embed_dim] text feature vectors.
@@ -242,8 +243,12 @@ class TextEncoder(nn.Module):
         # Extract features
         # NOTE: For CoOp with many identical tokens, EOT position may have identical
         # representations. Instead, we use mean pooling over non-padding tokens.
-        # Find the first padding token (token_id = 0) for each sequence
-        eot_indices = tokenized_prompts.argmax(dim=-1)  # Position of EOT token
+        # EOT positions:
+        # - default: derive from tokenized prompts (original CoOp behavior)
+        # - class-specific frozen prompts: use pre-shifted indices from PromptLearner
+        if eot_indices is None:
+            eot_indices = tokenized_prompts.argmax(dim=-1)
+        eot_indices = eot_indices.to(x.device).clamp(max=x.shape[1] - 1)
 
         # Use mean pooling over tokens up to (and including) EOT position
         # This aggregates information from all meaningful tokens
@@ -338,6 +343,8 @@ class PromptLearner(nn.Module):
                 # These will be appended after the frozen prompt
                 learnable_padding = torch.empty(n_ctx, ctx_dim, dtype=dtype)
                 nn.init.normal_(learnable_padding, std=0.02)
+                # Explicitly require grad after initialization (safer for gradient flow)
+                learnable_padding = learnable_padding.requires_grad_(True)
 
                 frozen_prompts_list.append(frozen_embed)
                 learnable_ctx_list.append(learnable_padding)
@@ -420,6 +427,17 @@ class PromptLearner(nn.Module):
         self.register_buffer("token_prefix", embedding[:, :1, :])  # SOS
         self.register_buffer("token_suffix", embedding[:, 1 + n_ctx:, :])  # CLS, EOS
         self.register_buffer("tokenized_prompts", tokenized_prompts)  # 모델 이동시 토큰화된 프롬프트도 항상 같은 디바이스에 있도록 버퍼에 등록
+
+        # Precompute EOT indices aligned with the actual prompt layout.
+        # In class-specific init mode, frozen prompt embeddings are inserted before
+        # learnable context tokens, so EOT must be shifted by frozen prompt length.
+        base_eot_indices = tokenized_prompts.argmax(dim=-1)
+        if self.use_class_specific_init:
+            shift = torch.tensor(self.frozen_prompt_lengths, device=base_eot_indices.device)
+            eot_indices = base_eot_indices + shift
+        else:
+            eot_indices = base_eot_indices
+        self.register_buffer("eot_indices", eot_indices)
 
         self.n_cls = n_cls
         self.n_ctx = n_ctx
@@ -561,7 +579,8 @@ class VideoFeatureCLIP(nn.Module):
         # Generate text features from learned prompts
         prompts = self.prompt_learner()
         tokenized_prompts = self.prompt_learner.tokenized_prompts # 버퍼에 직접 접근해 텐서를 가져옴 (올바른 DEVICE로부터)
-        text_features = self.text_encoder(prompts, tokenized_prompts)
+        eot_indices = self.prompt_learner.eot_indices
+        text_features = self.text_encoder(prompts, tokenized_prompts, eot_indices=eot_indices)
 
         # L2 normalize
         image_features = image_features / image_features.norm(dim=-1, keepdim=True)
