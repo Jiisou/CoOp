@@ -1,0 +1,38 @@
+{
+  "checkpoint_path": "/mnt/c/Users/USER/Desktop/CoOp/output/custom_prompts/checkpoints/best_custom_prompt_model.pth",
+  "epoch": 16,
+  "initial_prompts_path": "/mnt/c/Users/USER/Desktop/CoOp/annotation/initial_prompts.json",
+  "mobileclip_model": "mobileclip2_s0",
+  "mobileclip_path": null,
+  "n_ctx": 16,
+  "csc": true,
+  "perplexity": 10.0,
+  "random_state": 42,
+  "binary_label": true,
+  "normal_class_name": "Normal",
+  "resolved_normal_index": 0,
+  "classnames": [
+    "Normal",
+    "Abuse",
+    "Arrest",
+    "Arson",
+    "Assault",
+    "Burglary",
+    "Explosion",
+    "Fighting",
+    "RoadAccidents",
+    "Robbery",
+    "Shooting",
+    "Shoplifting",
+    "Stealing",
+    "Vandalism"
+  ],
+  "generated": [
+    {
+      "plot": ".outputprompt_tsne_ckpt/trained_prompt_tsne_3d.png",
+      "json": ".outputprompt_tsne_ckpt/trained_prompt_tsne_3d.json",
+      "html": ".outputprompt_tsne_ckpt/trained_prompt_tsne_3d.html",
+      "html_error": null
+    }
+  ]
+}

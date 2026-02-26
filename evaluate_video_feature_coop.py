@@ -227,7 +227,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Evaluate CoOp model on test video features"
     )
-    parser.add_argument("--test-feature-dir", type=str, required=True,
+    parser.add_argument("--test-feature-dir", type=str, #required=True,
+                        default="/mnt/c/JJS/UCF_Crimes/Features/MCi20-avgpooled/test",
                         help="Path to test feature directory")
     parser.add_argument("--test-annotation-dir", type=str, default=None,
                         help="Path to test annotation CSV directory")
@@ -305,13 +306,21 @@ def main():
         device="cpu"
     )
 
+    # Create default class-specific prompts for proper ctx initialization
+    default_prompts = {}
+    for cls in classnames:
+        if cls.lower() == "normal":
+            default_prompts[cls] = "a normal scene without any anomaly"
+        else:
+            default_prompts[cls] = f"a video with {cls.lower()} event"
+
     # Create model
     model = VideoFeatureCLIP(
         classnames=classnames,
         clip_model=clip_model,
         tokenizer=tokenizer,
         n_ctx=args.n_ctx,
-        ctx_init="",
+        class_prompts=default_prompts,  # Use class-specific prompts for proper ctx shape [n_cls, n_ctx, ctx_dim]
         csc=args.csc,
         class_token_position="end",
         temporal_agg="mean",

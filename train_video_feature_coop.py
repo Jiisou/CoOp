@@ -411,7 +411,7 @@ def train(
         normal_class=normal_class,
         unit_duration=unit_duration,
         overlap_ratio=0.0,  # No overlap for validation
-        strict_normal_sampling=False,  # Keep all samples for validation
+        strict_normal_sampling=True,  # Keep all samples for validation
         use_video_level_pooling=use_video_level_pooling,
         verbose=True,
         seed=seed,
